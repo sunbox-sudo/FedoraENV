@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-dnf install -y git
+sudo dnf install -y git
 
 git clone https://github.com/sunbox-sudo/FedoraENV.git "$HOME/.FedoraENV"
 
