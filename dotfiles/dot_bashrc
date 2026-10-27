@@ -1,0 +1,40 @@
+# .bashrc
+
+# Source global definitions
+if [ -f /etc/bashrc ]; then
+    . /etc/bashrc
+fi
+
+# User specific environment
+if ! [[ "$PATH" =~ "$HOME/.local/bin:$HOME/bin:" ]]; then
+    PATH="$HOME/.local/bin:$HOME/bin:$PATH"
+fi
+export PATH
+
+# Uncomment the following line if you don't like systemctl's auto-paging feature:
+# export SYSTEMD_PAGER=
+
+# User specific aliases and functions
+if [ -d ~/.bashrc.d ]; then
+    for rc in ~/.bashrc.d/*; do
+        if [ -f "$rc" ]; then
+            . "$rc"
+        fi
+    done
+fi
+unset rc
+
+# Start SSH agent and add key
+# make sure ssh-agent.service is actice
+if ! systemctl --user is-active --quiet ssh-agent.service; then
+    systemctl --user enable --now ssh-agent.service &>/dev/null
+fi
+
+# get AUTH socket
+export SSH_AUTH_SOCK="$XDG_RUNTIME_DIR/ssh-agent.socket"
+
+# adds ssh-keys to agents
+if ! ssh-add -l &>/dev/null; then
+  ssh-add ~/.ssh/githubFedoraVM
+fi
+
