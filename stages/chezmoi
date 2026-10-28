@@ -39,7 +39,7 @@ _chezmoi_install_packages() {
 
 # -----------------------------------------------------------------------------
 # _chezmoi_configure
-#   Example helper: do the real work, guarded so a second run changes nothing.
+#   Configure the initail setup of chezmoi
 # -----------------------------------------------------------------------------
 _chezmoi_configure() {
   local target="${HOME}/.config/chezmoi"
@@ -54,6 +54,13 @@ _chezmoi_configure() {
   log_run ln -s "${HOME}"/.FedoraENV/config/ManualDot/chezmoi.toml "${HOME}"/.config/chezmoi/chezmoi.toml || log_die "Could not create a symlink from repos dotfiles to config folder for chesmoi"
   [[ -f "${target}/chezmoi.toml" ]] && log_debug "Symlink file exist" || log_die "symlink don't exixt thus failed to be created"
   [[ -L "${target}/chezmoi.toml" ]] && log_debug "symlink work as expected" || log_die "symlink exixt but dangel (isn't linked to anything)"
+}
+
+# -----------------------------------------------------------------------------
+# _chezmoi_apply
+#   update and aplays all chezmoi files
+# -----------------------------------------------------------------------------
+_chezmoi_apply(){
   log_run chezmoi apply || log_die "could not aplly chezmoi"
 }
 
@@ -65,4 +72,5 @@ _chezmoi_configure() {
 stage_run() {
   _chezmoi_install_packages
   _chezmoi_configure
+  _chezmoi_apply
 }
