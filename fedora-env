@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# =============================================================================
+# fedora-env - installs and updates a Fedora machine (FedoraENV main engine)
+# =============================================================================
+# USAGE
+#   fedora-env [options]
+#
+# OPTIONS
+#   -v, --verbose        show debug lines and command output on the terminal
+#       --no-update      skip the system update (dnf upgrade)
+#   -p, --profile NAME   use machines/NAME (or machines/NAME.conf) instead of
+#                        the one matching the hostname
+#   -h, --help           show this help
+#
+# WHAT IT DOES (in order)
+#   1. pre-flight checks (not root, Fedora 44+, network, sudo)
+#   2. loads the machine profile (decides which stages run)
+#   3. system update (unless --no-update), then asks if a reboot is needed
+#   4. runs the stages listed in the profile
+#   5. prints a reboot notice at the end if one is needed
+#
+# MACHINE PROFILE (machines/<hostname> or machines/<hostname>.conf)
+#   A bash file that is SOURCED. It must set the stage list with a plain
+#   assignment (no "declare"/"local" in front):
+#       STAGES=(chezmoi hyprland)
+#   Each name is a file stages/<name>. It may also set other per-machine
+#   variables for the stages to read.
+#
+# STAGE FILE (stages/<name>)
+#   A bash file that is SOURCED. It must define one function, stage_run, which
+#   does the work. Stages can use every lib function (log_*, pkg_*, check_*,
+#   reboot_*). Sourced stages can call reboot_request, executables could not.
+#
+# NOTES
+#   - Works through the symlink in ~/.local/bin: the repo folder is found by
+#     following the link back to the real file.
+#   - Safe to run again and again (idempotent). Stages should keep it that way.
+# =============================================================================
+set -euo pipefail
+
+# Real location of this file, even when started through a symlink.
+FENV_HOME="$(cd -- "$(dirname -- "$(readlink -f -- "${BASH_SOURCE[0]}")")" && pwd)"
+export FENV_HOME
+
+# shellcheck source=lib/log
+source "${FENV_HOME}/lib/log"
+# shellcheck source=lib/check
+source "${FENV_HOME}/lib/check"
+# shellcheck source=lib/pkg
+source "${FENV_HOME}/lib/pkg"
+# shellcheck source=lib/reboot
+source "${FENV_HOME}/lib/reboot"
+
+# Settings (flags can change them) -------------------------------------------
+SKIP_UPDATE=0
+PROFILE=""
+STAGES=()          # filled by the machine profile
+
+# -----------------------------------------------------------------------------
+# usage - print the help text (the comment block at the top of this file)
+# -----------------------------------------------------------------------------
+usage() {
+  # The header comment has three "# ====" rulers (top, under the title, bottom).
+  # Print everything between them and stop at the third one.
+  awk 'NR == 1 { next }
+       /^# =+$/ { if (++r == 3) exit; next }
+       { sub(/^# ?/, ""); print }' "${BASH_SOURCE[0]}"
+}
+
+# -----------------------------------------------------------------------------
+# parse_args ARGS...
+# -----------------------------------------------------------------------------
+parse_args() {
+  while (( $# > 0 )); do
+    case "$1" in
+      -v|--verbose)
+        FENV_VERBOSE=1
+        ;;
+      --no-update)
+        SKIP_UPDATE=1
+        ;;
+      -p|--profile)
+        [[ -n "${2:-}" ]] || log_die "Option $1 needs a profile name."
+        PROFILE="$2"
+        shift
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        usage >&2
+        log_die "Unknown option: $1"
+        ;;
+    esac
+    shift
+  done
+}
+
+# -----------------------------------------------------------------------------
+# load_profile
+#   Find and source the machine profile. It is sourced in the global scope so
+#   that STAGES=(...) in the profile ends up in our STAGES variable.
+# -----------------------------------------------------------------------------
+load_profile() {
+  local name="${PROFILE:-$(uname -n)}" candidate file=""
+  for candidate in "${FENV_HOME}/machines/${name}" "${FENV_HOME}/machines/${name}.conf"; do
+    if [[ -f "$candidate" ]]; then
+      file="$candidate"
+      break
+    fi
+  done
+  if [[ -z "$file" ]]; then
+    log_die "No machine profile for '${name}' in ${FENV_HOME}/machines/. Use --profile NAME."
+  fi
+  log_info "Profile: ${name} (${file})"
+  # shellcheck source=/dev/null
+  source "$file"
+}
+
+# -----------------------------------------------------------------------------
+# run_stage NAME
+#   Source stages/NAME and run its stage_run function.
+# -----------------------------------------------------------------------------
+run_stage() {
+  local name="$1" file="${FENV_HOME}/stages/${1}"
+  if [[ ! -f "$file" ]]; then
+    log_die "Stage file not found: ${file}"
+  fi
+  log_section "Stage: ${name}"
+  # shellcheck source=/dev/null
+  source "$file"
+  if ! declare -F stage_run >/dev/null; then
+    log_die "Stage '${name}' does not define a stage_run function."
+  fi
+  stage_run
+  unset -f stage_run   # so a stage that forgets it cannot reuse the last one
+}
+
+# -----------------------------------------------------------------------------
+# main
+# -----------------------------------------------------------------------------
+main() {
+  parse_args "$@"
+
+  check_not_root
+  log_init || exit 1
+  log_trap_errors
+  trap check_sudo_keepalive_stop EXIT
+
+  log_section "Pre-flight checks"
+  check_require_fedora 44
+  check_require_network
+  check_sudo
+  check_sudo_keepalive_start
+
+  load_profile
+
+  if (( SKIP_UPDATE )); then
+    log_info "Skipping the system update (--no-update)."
+  else
+    log_section "System update"
+    pkg_update
+    reboot_check_system
+  fi
+
+  if (( ${#STAGES[@]} == 0 )); then
+    log_warn "The profile lists no stages, nothing else to do."
+  fi
+  local stage
+  for stage in "${STAGES[@]}"; do
+    run_stage "$stage"
+  done
+
+  log_section "Done"
+  reboot_notice
+}
+
+main "$@"
