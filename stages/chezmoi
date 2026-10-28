@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# =============================================================================
+# stages/chezmoi - install & configure chezmoi
+# =============================================================================
+# HOW TO USE
+#   1. Copy this file:  cp stages/_template stages/_chezmoi
+#   2. Replace every chezmoi / TODO below.
+#   3. Add chezmoi to STAGES=(...) in the machine profile (machines/...).
+#   The leading underscore keeps this template from ever being run by mistake.
+#
+# HOW A STAGE RUNS
+#   fedora-env SOURCES this file and then calls stage_run. It has already
+#   printed the stage heading, so do not print one yourself.
+#   Everything from lib/ is available: log_*, check_*, pkg_*, reboot_*.
+#   Per-machine settings from the profile (e.g. HAS_NVIDIA=0) are plain
+#   variables here.
+#
+# RULES FOR A GOOD STAGE
+#   - Idempotent: running it twice must give the same result and no errors.
+#     Check before you change something, skip with a log_info when it is done.
+#   - Define ONLY functions at the top level. Nothing runs when sourced.
+#   - stage_run is the one entry point. Put real work in helper functions
+#     named _chezmoi_something, because all stages share one namespace.
+#   - Use "local" for variables inside functions.
+#   - Run commands that write output through log_run, so they land in the log.
+#   - Stop with log_die when the stage cannot continue. Do not carry on half done.
+#   - Need a reboot afterwards? reboot_request "why".
+#   - Do not call "exit" and do not change "set -e". The main script owns both.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# _chezmoi_install_packages
+#   install what the stage needs. pkg_install skips packages that are already
+#   installed.
+# -----------------------------------------------------------------------------
+_chezmoi_install_packages() {
+  pkg_install chezmoi
+}
+
+# -----------------------------------------------------------------------------
+# _chezmoi_configure
+#   Example helper: do the real work, guarded so a second run changes nothing.
+# -----------------------------------------------------------------------------
+_chezmoi_configure() {
+  local target="${HOME}/.config/chezmoi"
+
+  if [[ -f "${target}/chezmoi.toml" ]]; then
+    log_info "Already installed: ${target}"
+    return 0
+  fi
+
+  log_info "Configuring ${target}"
+  log_run mkdir -p "$target" || log_die "Could not create ${target}"
+  log_run ln -s "${HOME}"/.FedoraENV/dotfiles/.config/chezmoi/chezmoi.toml "${HOME}"/.config/chezmoi/chezmoi.toml || log_die "Could not create a symlink from repos dotfiles to config folder for chesmoi"
+  [[ -f "${target}/chezmoi.toml" ]] && log_debug "Symlink file exist" || log_die "symlink don't exixt thus failed to be created"
+  [[ -L "${target}/chezmoi.toml" ]] && log_debug "symlink work as expected" || log_die "symlink exixt but dangel (isn't linked to anything)"
+  log_run chezmoi apply || log_die "could not aplly chezmoi"
+}
+
+# -----------------------------------------------------------------------------
+# stage_run
+#   The entry point fedora-env calls. Keep it short: it just calls the helpers
+#   in order, so it reads like a table of contents.
+# -----------------------------------------------------------------------------
+stage_run() {
+  _chezmoi_install_packages
+  _chezmoi_configure
+}
