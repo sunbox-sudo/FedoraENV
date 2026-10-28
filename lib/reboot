@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# =============================================================================
+# lib/reboot.sh - "a reboot is needed" tracking for FedoraENV
+# =============================================================================
+# PURPOSE
+#   Collect reasons why a reboot is needed during the run and show one notice
+#   at the end.
+#
+# USAGE (this file is SOURCED, never executed)
+#   source "$FENV_HOME/lib/reboot.sh"       # loads log.sh by itself
+#   reboot_request "kernel was updated"     # any stage can add a reason
+#   reboot_check_system                     # ask the system (call after dnf upgrade)
+#   if reboot_needed; then ... fi
+#   reboot_notice                           # last line of the script
+#
+# DEPENDS ON
+#   lib/log (sourced automatically)
+#
+# NOTES
+#   - The reasons live in a shell array. That only works when stages are SOURCED
+#     (or run in the same shell). A stage started as a separate executable
+#     cannot change the main script's variables. It would have to write a flag
+#     file instead.
+#   - Source this file at top level, not inside a function (arrays would become
+#     function-local).
+#   - reboot_check_system uses "dnf needs-restarting -r". If your dnf does not
+#     have it, it falls back to comparing the running kernel with the newest
+#     installed one. Test it once in the VM after an update.
+#   - Public functions are named reboot_*, internal ones _reboot_*.
+# =============================================================================
+
+[[ -n "${_FENV_REBOOT_LOADED:-}" ]] && return 0
+_FENV_REBOOT_LOADED=1
+
+_FENV_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/log
+source "${_FENV_LIB_DIR}/log"
+
+declare -ga FENV_REBOOT_REASONS=()
+
+# -----------------------------------------------------------------------------
+# reboot_request REASON...
+#   Remember that a reboot is needed, and why.
+# -----------------------------------------------------------------------------
+reboot_request() {
+  local reason="$*"
+  FENV_REBOOT_REASONS+=("$reason")
+  log_debug "reboot requested: ${reason}"
+}
+
+# -----------------------------------------------------------------------------
+# reboot_needed
+#   0 (true) if any reason was collected, 1 otherwise.
+# -----------------------------------------------------------------------------
+reboot_needed() {
+  (( ${#FENV_REBOOT_REASONS[@]} > 0 ))
+}
+
+# -----------------------------------------------------------------------------
+# reboot_check_system
+#   Ask the system if a reboot is needed (e.g. after a kernel update) and add
+#   a reason if so. Call it after pkg_update.
+# -----------------------------------------------------------------------------
+reboot_check_system() {
+  local rc=0
+  dnf needs-restarting -r >/dev/null 2>&1 && rc=0 || rc=$?
+
+  case "$rc" in
+    0)
+      log_debug "dnf needs-restarting: no reboot needed"
+      return 0
+      ;;
+    1)
+      reboot_request "core system packages were updated (dnf needs-restarting)"
+      return 0
+      ;;
+    *)
+      log_debug "dnf needs-restarting unavailable (exit ${rc}), comparing kernels"
+      ;;
+  esac
+
+  # Fallback: running kernel vs newest installed kernel.
+  local running newest
+  running="$(uname -r)"
+  newest="$(rpm -q kernel-core --qf '%{VERSION}-%{RELEASE}.%{ARCH}\n' 2>/dev/null \
+    | grep -E '^[0-9]' | sort -V | tail -n 1 || true)"
+  if [[ -n "$newest" && "$running" != "$newest" ]]; then
+    reboot_request "a newer kernel is installed (${newest}, running ${running})"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# reboot_notice
+#   Print the final notice when a reboot is needed. Does nothing otherwise.
+# -----------------------------------------------------------------------------
+reboot_notice() {
+  if ! reboot_needed; then
+    return 0
+  fi
+  local reason
+  log_warn "A reboot is needed to finish the setup:"
+  for reason in "${FENV_REBOOT_REASONS[@]}"; do
+    log_warn "  - ${reason}"
+  done
+  log_warn "Reboot when ready: sudo systemctl reboot"
+}

@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#/check.sh - pre-flight checks for FedoraENV
+# =============================================================================
+# PURPOSE
+#   Answer "is it safe to continue?" before the script changes anything.
+#   Two kinds of functions:
+#     check_X          returns 0/1, prints nothing. Use in an if.
+#     check_require_X  exits through log_die when the check fails.
+#
+# USAGE (this file is SOURCED, never executed)
+#   source "$FENV_HOME/lib/check.sh"      # loads log.sh by itself
+#   check_not_root
+#   check_require_fedora 44
+#   check_require_command git "Install it with: sudo dnf install git"
+#   check_sudo                            # asks for the password once
+#   check_sudo_keepalive_start            # keeps sudo valid during long runs
+#   ...
+#   check_sudo_keepalive_stop             # at the end of the script
+#
+#   if check_command nvim; then ... fi
+#
+# DEPENDS ON
+#   lib/log (sourced automatically)
+#
+# NOTES
+#   - The script is meant to run as your normal user, with sudo where needed.
+#     Dotfiles (chezmoi) and ~/.FedoraENV must belong to you, not to root.
+#   - Your user must be in the "wheel" group for sudo to work.
+#   - Public functions are named check_*, internal ones _check_*.
+# =============================================================================
+
+[[ -n "${_FENV_CHECK_LOADED:-}" ]] && return 0
+_FENV_CHECK_LOADED=1
+
+_FENV_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/log
+source "${_FENV_LIB_DIR}/log"
+
+_FENV_SUDO_KEEPALIVE_PID=""
+
+# -----------------------------------------------------------------------------
+# check_command NAME
+#   0 if NAME is an available command, 1 otherwise.
+# -----------------------------------------------------------------------------
+check_command() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+# -----------------------------------------------------------------------------
+# check_require_command NAME [HINT]
+#   Exit with a clear message when NAME is missing. HINT is added to the message.
+# -----------------------------------------------------------------------------
+check_require_command() {
+  local cmd="$1" hint="${2:-}"
+  if ! check_command "$cmd"; then
+    log_die "Required command not found: ${cmd}.${hint:+ ${hint}}"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# check_not_root
+#   Exit when running as root. Run as your user; sudo is used where needed.
+# -----------------------------------------------------------------------------
+check_not_root() {
+  if (( EUID == 0 )); then
+    log_die "Do not run this as root. Run it as your normal user (sudo is used when needed)."
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# check_sudo
+#   Ask for the sudo password up front (and cache it). Exit if sudo fails.
+# -----------------------------------------------------------------------------
+check_sudo() {
+  check_require_command sudo "Is your user in the wheel group?"
+  if ! sudo -v; then
+    log_die "sudo does not work for user $(id -un). Is the user in the wheel group?"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# check_sudo_keepalive_start / check_sudo_keepalive_stop
+#   The sudo cache expires (default 15 min). A long dnf run can outlive it and
+#   ask for the password again in the middle of a stage. The keepalive refreshes
+#   it in the background until the script ends or you call _stop.
+#   Run check_sudo first. Safe to call _start twice.
+# -----------------------------------------------------------------------------
+check_sudo_keepalive_start() {
+  if [[ -n "$_FENV_SUDO_KEEPALIVE_PID" ]]; then
+    return 0
+  fi
+  local parent=$$
+  (
+    # Stops by itself when the main script is gone or sudo stops working.
+    while kill -0 "$parent" 2>/dev/null; do
+      sudo -n true 2>/dev/null || exit 0
+      sleep 50
+    done
+  ) &
+  _FENV_SUDO_KEEPALIVE_PID=$!
+  disown "$_FENV_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  log_debug "sudo keepalive started (pid $_FENV_SUDO_KEEPALIVE_PID)"
+}
+
+check_sudo_keepalive_stop() {
+  if [[ -z "$_FENV_SUDO_KEEPALIVE_PID" ]]; then
+    return 0
+  fi
+  kill "$_FENV_SUDO_KEEPALIVE_PID" 2>/dev/null || true
+  _FENV_SUDO_KEEPALIVE_PID=""
+  log_debug "sudo keepalive stopped"
+}
+
+# -----------------------------------------------------------------------------
+# check_fedora_version
+#   Prints the Fedora version number (e.g. 44) and returns 0.
+#   Returns 1 and prints nothing when this is not Fedora.
+# -----------------------------------------------------------------------------
+check_fedora_version() {
+  # Subshell, so sourcing /etc/os-release does not pollute our variables.
+  (
+    # shellcheck disable=SC1091
+    . /etc/os-release 2>/dev/null || exit 1
+    [[ "${ID:-}" == fedora ]] || exit 1
+    printf '%s\n' "${VERSION_ID:-}"
+  )
+}
+
+# -----------------------------------------------------------------------------
+# check_require_fedora [MIN_VERSION]
+#   Exit unless this is Fedora (at least MIN_VERSION when given).
+# -----------------------------------------------------------------------------
+check_require_fedora() {
+  local min="${1:-0}" ver
+  ver="$(check_fedora_version)" || log_die "This script only supports Fedora."
+  if [[ ! "$ver" =~ ^[0-9]+$ ]]; then
+    log_die "Could not read the Fedora version (got: '${ver}')."
+  fi
+  if (( ver < min )); then
+    log_die "Fedora ${min} or newer is required (found ${ver})."
+  fi
+  log_debug "Fedora ${ver} detected"
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# check_network / check_require_network
+#   Can we reach GitHub? (git clones and chezmoi need it.) Needs curl.
+# -----------------------------------------------------------------------------
+check_network() {
+  check_command curl && curl -fsI --max-time 5 -o /dev/null https://github.com
+}
+
+check_require_network() {
+  if ! check_network; then
+    log_die "No network connection (could not reach github.com)."
+  fi
+  return 0
+}

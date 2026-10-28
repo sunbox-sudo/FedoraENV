@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+#/log.sh - logging for FedoraENV
+# =============================================================================
+# PURPOSE
+#   One place for all output of the installer. Every message goes to the log
+#   file. The terminal gets a readable subset, and more when verbose is on.
+#
+# USAGE (this file is SOURCED, never executed)
+#   source "$FENV_HOME/lib/log.sh"
+#   log_init                        # once, early, after flags are parsed
+#   log_trap_errors                 # optional: log unexpected failures, exit clean
+#   log_section "Updating system"   # heading
+#   log_info  "something happened"
+#   log_warn  "careful"
+#   log_error "bad, but we continue"
+#   log_debug "details (terminal only when verbose)"
+#   log_run sudo dnf upgrade -y     # run a command, output -> log file
+#   log_die "cannot continue"       # log the error and exit (default code 1)
+#   log_die 3 "custom exit code"
+#
+# SETTINGS (environment variables, set BEFORE log_init)
+#   FENV_HOME      repo folder                  default: ~/.FedoraENV
+#   FENV_LOG_FILE  log file path                default: $FENV_HOME/logs/fedora-env.log
+#   FENV_VERBOSE   1 = show debug lines and command output on the terminal
+#                  (anything else = quiet)      default: 0
+#   NO_COLOR       set to anything to disable colours
+#
+# NOTES
+#   - Terminal output goes to STDERR, so stdout stays free for data.
+#   - This lib never calls "set -e" itself. The main script decides that.
+#   - log_die uses "exit". Inside a ( subshell ) it only leaves the subshell.
+#   - The log file is appended to forever. Add rotation later if it gets big.
+#   - Public functions are named log_*, internal ones _log_*.
+# =============================================================================
+
+# Guard: sourcing this file twice does nothing.
+[[ -n "${_FENV_LOG_LOADED:-}" ]] && return 0
+_FENV_LOG_LOADED=1
+
+: "${FENV_HOME:=${HOME}/.FedoraENV}"
+: "${FENV_LOG_FILE:=${FENV_HOME}/logs/fedora-env.log}"
+: "${FENV_VERBOSE:=0}"
+
+# Colours only when stderr is a terminal and NO_COLOR is not set.
+if [[ -t 2 && -z "${NO_COLOR:-}" ]]; then
+  _FENV_C_RESET=$'\033[0m'
+  _FENV_C_BOLD=$'\033[1m'
+  _FENV_C_RED=$'\033[31m'
+  _FENV_C_GREEN=$'\033[32m'
+  _FENV_C_YELLOW=$'\033[33m'
+  _FENV_C_DIM=$'\033[2m'
+else
+  _FENV_C_RESET='' _FENV_C_BOLD='' _FENV_C_RED=''
+  _FENV_C_GREEN='' _FENV_C_YELLOW='' _FENV_C_DIM=''
+fi
+
+# -----------------------------------------------------------------------------
+# _log_write LEVEL MESSAGE...
+#   Append one timestamped line to the log file. Never fails the caller.
+# -----------------------------------------------------------------------------
+_log_write() {
+  local level="$1"
+  shift
+  local ts
+  printf -v ts '%(%Y-%m-%d %H:%M:%S)T' -1
+  # 2>/dev/null must come FIRST, otherwise bash prints the "cannot open file"
+  # error before the redirect to /dev/null is active.
+  printf '%s [%-5s] %s\n' "$ts" "$level" "$*" 2>/dev/null >>"$FENV_LOG_FILE" || true
+}
+
+# -----------------------------------------------------------------------------
+# _log_emit LEVEL COLOUR MESSAGE...
+#   Write to the log file and to the terminal (stderr).
+# -----------------------------------------------------------------------------
+_log_emit() {
+  local level="$1" color="$2"
+  shift 2
+  _log_write "$level" "$*"
+  printf '%s[%s]%s %s\n' "$color" "$level" "$_FENV_C_RESET" "$*" >&2
+}
+
+# -----------------------------------------------------------------------------
+# log_init
+#   Create the log folder and file and write a start marker.
+#   Returns 1 (with a message) when the log file cannot be written.
+# -----------------------------------------------------------------------------
+log_init() {
+  local dir
+  dir="$(dirname -- "$FENV_LOG_FILE")"
+  if ! mkdir -p -- "$dir" || ! : >>"$FENV_LOG_FILE"; then
+    printf 'ERROR: cannot write log file: %s\n' "$FENV_LOG_FILE" >&2
+    return 1
+  fi
+  _log_write INFO "===== fedora-env started (user=$(id -un) host=$(uname -n)) ====="
+}
+
+# Plain messages -------------------------------------------------------------
+log_info()  { _log_emit INFO  "$_FENV_C_GREEN"  "$@"; }
+log_warn()  { _log_emit WARN  "$_FENV_C_YELLOW" "$@"; }
+log_error() { _log_emit ERROR "$_FENV_C_RED"    "$@"; }
+
+# -----------------------------------------------------------------------------
+# log_debug MESSAGE...
+#   Always written to the log file. Shown on the terminal only if verbose.
+# -----------------------------------------------------------------------------
+log_debug() {
+  _log_write DEBUG "$*"
+  if [[ "$FENV_VERBOSE" == 1 ]]; then
+    printf '%s[DEBUG] %s%s\n' "$_FENV_C_DIM" "$*" "$_FENV_C_RESET" >&2
+  fi
+}
+
+# -----------------------------------------------------------------------------
+# log_section TITLE...
+#   A visible heading for a stage ("Installing packages", ...).
+# -----------------------------------------------------------------------------
+log_section() {
+  _log_write INFO "=== $* ==="
+  printf '\n%s==> %s%s\n' "$_FENV_C_BOLD" "$*" "$_FENV_C_RESET" >&2
+}
+
+# -----------------------------------------------------------------------------
+# log_die [EXIT_CODE] MESSAGE...
+#   Log an error and exit. Use for anything the script cannot recover from.
+#   EXIT_CODE is optional (a number as first argument), default 1.
+# -----------------------------------------------------------------------------
+log_die() {
+  local code=1
+  if [[ "${1:-}" =~ ^[0-9]+$ && $# -gt 1 ]]; then
+    code="$1"
+    shift
+  fi
+  log_error "$@"
+  log_error "Aborting. Details: $FENV_LOG_FILE"
+  exit "$code"
+}
+
+# -----------------------------------------------------------------------------
+# log_run COMMAND [ARGS...]
+#   Run a command. Its output (stdout + stderr) goes to the log file, and also
+#   to the terminal when FENV_VERBOSE=1.
+#   Returns the command's exit code and logs an error when it is not 0.
+#   The caller decides what a failure means:
+#       log_run sudo dnf upgrade -y || log_die "update failed"
+# -----------------------------------------------------------------------------
+log_run() {
+  local rc=0
+  local -a status=()
+  log_debug "run: $*"
+  if [[ "$FENV_VERBOSE" == 1 ]]; then
+    # Pipe through tee. PIPESTATUS[0] is the real exit code of the command,
+    # whether or not pipefail is set by the caller.
+    "$@" 2>&1 | tee -a "$FENV_LOG_FILE" >&2 \
+      && status=("${PIPESTATUS[@]}") || status=("${PIPESTATUS[@]}")
+    rc="${status[0]}"
+  else
+    "$@" >>"$FENV_LOG_FILE" 2>&1 && rc=0 || rc=$?
+  fi
+  if (( rc != 0 )); then
+    log_error "Command failed (exit $rc): $*"
+    return "$rc"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# log_trap_errors
+#   Install an ERR trap: when a command fails unexpectedly, log which one
+#   (line + command) and exit with its exit code. Does NOT trigger for
+#   commands you handle yourself (if, &&, ||).
+#   Call it once in the main script, after log_init.
+# -----------------------------------------------------------------------------
+log_trap_errors() {
+  set -o errtrace   # let functions inherit the trap
+  trap '_log_on_err "$?" "$LINENO" "$BASH_COMMAND"' ERR
+}
+
+_log_on_err() {
+  local code="$1" line="$2" cmd="$3"
+  trap - ERR        # avoid recursion
+  log_error "Unexpected failure (exit $code) at line $line: $cmd"
+  log_error "Aborting. Details: $FENV_LOG_FILE"
+  exit "$code"
+}

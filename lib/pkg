@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# =============================================================================
+# lib/pkg - package handling (dnf) for FedoraENV
+# =============================================================================
+# PURPOSE
+#   Install and update packages in a way that is safe to run again and again
+#   (idempotent): packages that are already installed are skipped.
+#
+# USAGE (this file is SOURCED, never executed)
+#   source "$FENV_HOME/lib/pkg.sh"          # loads log.sh by itself
+#   pkg_update                              # dnf upgrade (skip it with your own flag)
+#   pkg_install git tmux zsh neovim         # installs only what is missing
+#   if pkg_installed chezmoi; then ... fi
+#
+# DEPENDS ON
+#   lib/log (sourced automatically). sudo must already work (see check.sh).
+#
+# NOTES
+#   - pkg_install and pkg_update exit through log_die on failure. A half
+#     installed system is worse than a stopped script.
+#   - Run reboot_check_system (reboot.sh) after pkg_update to catch kernel updates.
+#   - pkg_installed checks package NAMES with rpm. It does not understand
+#     groups (@group) or virtual provides.
+#   - All command output goes to the log file, see log_run in log.sh.
+#   - Public functions are named pkg_*.
+# =============================================================================
+
+[[ -n "${_FENV_PKG_LOADED:-}" ]] && return 0
+_FENV_PKG_LOADED=1
+
+_FENV_LIB_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/log
+source "${_FENV_LIB_DIR}/log"
+
+# -----------------------------------------------------------------------------
+# pkg_installed NAME
+#   0 if the package is installed, 1 otherwise.
+# -----------------------------------------------------------------------------
+pkg_installed() {
+  rpm -q "$1" >/dev/null 2>&1
+}
+
+# -----------------------------------------------------------------------------
+# pkg_install NAME...
+#   Install every package that is not installed yet. Does nothing (and says so
+#   in the log) when all are present. Exits when dnf fails.
+# -----------------------------------------------------------------------------
+pkg_install() {
+  if (( $# == 0 )); then
+    log_die "pkg_install called without packages (bug in the calling script)."
+  fi
+
+  local pkg
+  local -a missing=()
+  for pkg in "$@"; do
+    pkg_installed "$pkg" || missing+=("$pkg")
+  done
+
+  if (( ${#missing[@]} == 0 )); then
+    log_debug "already installed: $*"
+    return 0
+  fi
+
+  log_info "Installing: ${missing[*]}"
+  if ! log_run sudo dnf install -y "${missing[@]}"; then
+    log_die "Installing packages failed: ${missing[*]}"
+  fi
+  return 0
+}
+
+# -----------------------------------------------------------------------------
+# pkg_update
+#   Refresh the metadata and upgrade all packages. Exits when dnf fails.
+# -----------------------------------------------------------------------------
+pkg_update() {
+  log_info "Updating the system (dnf upgrade)..."
+  if ! log_run sudo dnf upgrade -y --refresh; then
+    log_die "System update failed."
+  fi
+  return 0
+}
