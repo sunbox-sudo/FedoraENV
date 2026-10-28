@@ -51,7 +51,7 @@ _chezmoi_configure() {
 
   log_info "Configuring ${target}"
   log_run mkdir -p "$target" || log_die "Could not create ${target}"
-  log_run ln -s "${HOME}"/.FedoraENV/dotfiles/.config/chezmoi/chezmoi.toml "${HOME}"/.config/chezmoi/chezmoi.toml || log_die "Could not create a symlink from repos dotfiles to config folder for chesmoi"
+  log_run ln -s "${HOME}"/.FedoraENV/config/ManualDot/chezmoi.toml "${HOME}"/.config/chezmoi/chezmoi.toml || log_die "Could not create a symlink from repos dotfiles to config folder for chesmoi"
   [[ -f "${target}/chezmoi.toml" ]] && log_debug "Symlink file exist" || log_die "symlink don't exixt thus failed to be created"
   [[ -L "${target}/chezmoi.toml" ]] && log_debug "symlink work as expected" || log_die "symlink exixt but dangel (isn't linked to anything)"
   log_run chezmoi apply || log_die "could not aplly chezmoi"
