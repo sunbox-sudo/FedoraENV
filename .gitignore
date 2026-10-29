@@ -1,2 +1,48 @@
-# VM stuff
-shared-VM
+# =============================================================================
+# FedoraENV .gitignore
+# =============================================================================
+
+# --- VM stuff ----------------------------------------------------------------
+# Folder shared with the virt-manager VM, only in the repo root.
+/shared-VM/
+
+# --- Editor: (Neo)Vim --------------------------------------------------------
+# Swap files, including the extra ones Vim makes when a swap file is left over.
+*.swp
+*.swo
+*.swn
+# Backup files and undo files (both end in ~).
+*~
+# Session and netrw history files.
+Session.vim
+.netrwhist
+
+# --- Editor: others ----------------------------------------------------------
+.vscode/
+.idea/
+
+# --- Secrets -----------------------------------------------------------------
+# The repo is PUBLIC. Never commit keys or tokens.
+# Just as a Backup shoulnt even live here
+.env
+*.pem
+*.key
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+
+# --- Temporary and leftover files --------------------------------------------
+*.tmp
+*.bak
+*.orig
+*.rej
+
+# --- Build output (for the DWM build and any C stuff) ------------------------
+*.o
+*.a
+*.so
+
+# --- Logs: keep the folder, ignore what is in it -----------------------------
+/logs/*
+!/logs/.gitkeep
